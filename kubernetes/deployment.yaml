@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mortgage-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mortgage-app
+  template:
+    metadata:
+      labels:
+        app: mortgage-app
+    spec:
+      containers:
+      - name: mortgage-app
+        image: your-repo/mortgage-app:latest
+        ports:
+        - containerPort: 5000

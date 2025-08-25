@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyz
+*.egg-info/
+dist/
+build/
+htmlcov/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# IDEs and Editors
+.vscode/
+.idea/
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+
+# Environment
+.env
+env/
+venv/
+*.venv/
+
+# Docker
+docker-compose.lock
+.dockerignore
+
+# Kubernetes
+kubernetes/config.yaml
+
+# CI/CD
+ci-cd/secrets.yml
+
+# Data
+data/*.csv
+data/*.xlsx
+
+# Logs
+logs/
+*.log
+
+# OS-generated files
+Thumbs.db
+
+# Trained Models
+app/models/*.pkl
+
+# Flask
+instance/
+
+# Monitoring
+monitoring/prometheus.db
+
+# README artifacts
+*.md~
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# macOS
+.DS_Store
