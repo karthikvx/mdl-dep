@@ -1,5 +1,39 @@
 # Mortgage Application
 
+This architecture uses AWS managed services to create a scalable, resilient, and decoupled system.
+
+
+![Architecture](/assets/mortgage_loan_process.png)
+
+
+---
+
+### Key Architecture Components Explained:
+
+1.  **Event-Driven Core (AWS EventBridge):** The central nervous system. A loan application event is published to the Event Bus. EventBridge then fans out this event to the two independent microservices simultaneously, ensuring decoupling and scalability.
+
+2.  **Microservices (Deployed on EKS/ECS):**
+    *   **Loan Pricing Service:** A containerized service that listens for events. It calculates the rate, potentially using parameters from a fast database like **DynamoDB**. It emits a "PricingResult" event.
+    *   **Default Prediction Service:** Another containerized service. It loads a pre-trained **Random Forest model** from an S3 bucket to make a risk prediction on the same loan event. It emits a "RiskResult" event.
+
+3.  **Data Aggregation (AWS Lambda):** A serverless function acts as a consumer. It listens for the result events from both services, aggregates the pricing and risk data, and stores the final result in a **DynamoDB** table for the front-end to retrieve.
+
+4.  **Monitoring Stack:**
+    *   **Prometheus:** Scrapes metrics (e.g., request latency, error rates, model prediction times) exposed by each microservice.
+    *   **Grafana:** Queries Prometheus to create real-time dashboards for operational visibility (e.g., loans processed per minute, average response time).
+
+5.  **CI/CD Pipeline (GitHub Actions):** Automates the entire deployment process:
+    *   On a code push, it builds a new Docker image.
+    *   Runs tests and security scans.
+    *   Pushes the image to **Amazon ECR** (Container Registry).
+    *   Updates the deployment on **Amazon EKS** (Kubernetes Service) to roll out the new version.
+
+This architecture allows each component to scale independently, provides resilience if one service fails, and enables real-time monitoring of the entire system.
+
+
+
+# Mortgage Application POC
+
 An end-to-end mortgage application platform with loan pricing and default risk prediction APIs, containerized for cloud deployment and equipped with monitoring and CI/CD.
 
 ---
