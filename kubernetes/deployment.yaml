@@ -1,19 +1,411 @@
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mortgage-system
+  labels:
+    name: mortgage-system
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mortgage-config
+  namespace: mortgage-system
+data:
+  AWS_DEFAULT_REGION: "us-east-1"
+  DYNAMODB_TABLE_NAME: "mortgage-pricing-params"
+  S3_BUCKET_NAME: "mortgage-ml-models"
+  MODEL_KEY: "random_forest_default_model.pkl"
+  PRICING_SERVICE_URL: "http://pricing-service:5001"
+  PREDICTION_SERVICE_URL: "http://prediction-service:5002"
+  REDIS_URL: "redis://redis-service:6379"
+  ENVIRONMENT: "production"
+
+---
+# Secret for AWS credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-credentials
+  namespace: mortgage-system
+type: Opaque
+data:
+  AWS_ACCESS_KEY_ID: # base64 encoded
+  AWS_SECRET_ACCESS_KEY: # base64 encoded
+
+---
+# Redis Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mortgage-app
+  name: redis
+  namespace: mortgage-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        command: ["redis-server", "--appendonly", "yes"]
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: redis-pvc
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: mortgage-system
+spec:
+  selector:
+    app: redis
+  ports:
+  - protocol: TCP
+    port: 6379
+    targetPort: 6379
+  type: ClusterIP
+
+---
+# Redis PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: mortgage-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Loan Pricing Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pricing-service
+  namespace: mortgage-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pricing-service
+  template:
+    metadata:
+      labels:
+        app: pricing-service
+    spec:
+      containers:
+      - name: pricing-service
+        image: mortgage-pricing-service:latest
+        ports:
+        - containerPort: 5001
+        envFrom:
+        - configMapRef:
+            name: mortgage-config
+        - secretRef:
+            name: aws-credentials
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        imagePullPolicy: Always
+
+---
+# Pricing Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: pricing-service
+  namespace: mortgage-system
+spec:
+  selector:
+    app: pricing-service
+  ports:
+  - protocol: TCP
+    port: 5001
+    targetPort: 5001
+  type: ClusterIP
+
+---
+# Default Prediction Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prediction-service
+  namespace: mortgage-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: prediction-service
+  template:
+    metadata:
+      labels:
+        app: prediction-service
+    spec:
+      containers:
+      - name: prediction-service
+        image: mortgage-prediction-service:latest
+        ports:
+        - containerPort: 5002
+        envFrom:
+        - configMapRef:
+            name: mortgage-config
+        - secretRef:
+            name: aws-credentials
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5002
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5002
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        imagePullPolicy: Always
+
+---
+# Prediction Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prediction-service
+  namespace: mortgage-system
+spec:
+  selector:
+    app: prediction-service
+  ports:
+  - protocol: TCP
+    port: 5002
+    targetPort: 5002
+  type: ClusterIP
+
+---
+# Main Orchestrator Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: mortgage-system
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: mortgage-app
+      app: orchestrator
   template:
     metadata:
       labels:
-        app: mortgage-app
+        app: orchestrator
     spec:
       containers:
-      - name: mortgage-app
-        image: your-repo/mortgage-app:latest
+      - name: orchestrator
+        image: mortgage-orchestrator:latest
         ports:
         - containerPort: 5000
+        envFrom:
+        - configMapRef:
+            name: mortgage-config
+        - secretRef:
+            name: aws-credentials
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        imagePullPolicy: Always
+
+---
+# Orchestrator Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-service
+  namespace: mortgage-system
+spec:
+  selector:
+    app: orchestrator
+  ports:
+  - protocol: TCP
+    port: 5000
+    targetPort: 5000
+  type: LoadBalancer
+
+---
+# HPA for Orchestrator
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orchestrator-hpa
+  namespace: mortgage-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orchestrator
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# HPA for Pricing Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pricing-service-hpa
+  namespace: mortgage-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pricing-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+# HPA for Prediction Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: prediction-service-hpa
+  namespace: mortgage-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: prediction-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+# Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mortgage-network-policy
+  namespace: mortgage-system
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mortgage-system
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: mortgage-system
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
