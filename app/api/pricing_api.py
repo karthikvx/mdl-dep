@@ -1,69 +1,162 @@
+"""
+Loan Pricing Service - Calculates loan terms and pricing
+"""
+
 from flask import Flask, request, jsonify
-from prometheus_flask_exporter import PrometheusMetrics
-from app.services.pricing_service import LoanPricingService
-from app.models.schemas import LoanApplication
+import joblib
+import numpy as np
+import pandas as pd
+import boto3
+import os
+from datetime import datetime
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
-# Create Flask app
-pricing_app = Flask(__name__)
-metrics = PrometheusMetrics(pricing_app)
+# Global model cache
+pricing_model = None
+scaler = None
 
-# Initialize service
-pricing_service = LoanPricingService()
+def load_pricing_model():
+    """Load the pricing model from S3 or local cache"""
+    global pricing_model, scaler
+    
+    if pricing_model is None:
+        try:
+            # Try to load from S3 first
+            s3_client = boto3.client('s3')
+            bucket_name = os.getenv('MODEL_BUCKET', 'mortgage-ml-models')
+            model_path = 'models/loan_pricing/latest/'
+            
+            # Load model
+            s3_client.download_file(bucket_name, f'{model_path}model.pkl', 'pricing_model.pkl')
+            pricing_model = joblib.load('pricing_model.pkl')
+            
+            # Load scaler
+            s3_client.download_file(bucket_name, f'{model_path}scaler.pkl', 'pricing_scaler.pkl')
+            scaler = joblib.load('pricing_scaler.pkl')
+            
+            logger.info("Pricing model loaded from S3")
+        except Exception as e:
+            logger.warning(f"Could not load model from S3: {e}")
+            # Fallback: create a simple rule-based pricing model
+            pricing_model = 'rule_based'
+            scaler = None
+            logger.info("Using rule-based pricing model")
 
-@pricing_app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'loan-pricing-service',
-        'version': '1.0.0'
-    })
-
-@pricing_app.route('/price_loan', methods=['POST'])
-def price_loan():
-    """Process loan pricing request"""
+@app.route('/pricing/calculate', methods=['POST'])
+def calculate_loan_pricing():
+    """Calculate loan pricing based on application data"""
     try:
-        data = request.get_json()
+        application_data = request.get_json()
         
         # Validate required fields
-        required_fields = ['loan_amount', 'credit_score', 'dti_ratio']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
+        required_fields = ['loan_amount', 'credit_score', 'applicant_income', 'property_value']
+        missing_fields = [field for field in required_fields if field not in application_data]
         
-        # Create loan application
-        loan_app = LoanApplication(
-            loan_amount=float(data['loan_amount']),
-            credit_score=int(data['credit_score']),
-            dti_ratio=float(data['dti_ratio']),
-            application_id=data.get('application_id')
-        )
+        if missing_fields:
+            return jsonify({
+                'error': 'Missing required fields',
+                'missing_fields': missing_fields
+            }), 400
         
-        # Process pricing
-        result = pricing_service.process_loan_pricing(loan_app)
+        # Load model if not already loaded
+        load_pricing_model()
         
-        logger.info(f"Processed pricing for application {result.application_id}")
+        # Calculate pricing
+        pricing_result = calculate_pricing(application_data)
         
-        return jsonify({
-            'application_id': result.application_id,
-            'interest_rate': result.interest_rate,
-            'processing_time_ms': result.processing_time_ms,
-            'timestamp': result.timestamp
-        })
+        return jsonify(pricing_result)
         
-    except ValueError as e:
-        logger.error(f"Validation error: {e}")
-        return jsonify({'error': f'Invalid input: {str(e)}'}), 400
     except Exception as e:
-        logger.error(f"Processing error: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        logger.error(f"Error calculating loan pricing: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Pricing calculation failed',
+            'message': str(e)
+        }), 500
 
-@pricing_app.route('/metrics')
-def metrics_endpoint():
-    """Prometheus metrics endpoint"""
-    return metrics.registry.collect()
+def calculate_pricing(data):
+    """Calculate loan pricing using ML model or business rules"""
+    loan_amount = float(data['loan_amount'])
+    credit_score = int(data['credit_score'])
+    income = float(data['applicant_income'])
+    property_value = float(data['property_value'])
+    
+    if pricing_model == 'rule_based':
+        # Rule-based pricing
+        base_rate = 3.5  # Base interest rate
+        
+        # Adjust rate based on credit score
+        if credit_score >= 750:
+            rate_adjustment = -0.5
+        elif credit_score >= 700:
+            rate_adjustment = 0.0
+        elif credit_score >= 650:
+            rate_adjustment = 0.75
+        else:
+            rate_adjustment = 1.5
+        
+        # Adjust rate based on LTV ratio
+        ltv_ratio = loan_amount / property_value
+        if ltv_ratio > 0.8:
+            rate_adjustment += 0.5
+        elif ltv_ratio > 0.9:
+            rate_adjustment += 1.0
+        
+        interest_rate = base_rate + rate_adjustment
+        
+        # Calculate monthly payment (30-year fixed)
+        monthly_rate = interest_rate / 100 / 12
+        num_payments = 30 * 12
+        
+        if monthly_rate > 0:
+            monthly_payment = loan_amount * (monthly_rate * (1 + monthly_rate) ** num_payments) / ((1 + monthly_rate) ** num_payments - 1)
+        else:
+            monthly_payment = loan_amount / num_payments
+        
+    else:
+        # ML model prediction
+        features = prepare_features(data)
+        scaled_features = scaler.transform([features]) if scaler else [features]
+        
+        predictions = pricing_model.predict(scaled_features)
+        interest_rate = predictions[0]
+        
+        # Calculate monthly payment
+        monthly_rate = interest_rate / 100 / 12
+        num_payments = 30 * 12
+        monthly_payment = loan_amount * (monthly_rate * (1 + monthly_rate) ** num_payments) / ((1 + monthly_rate) ** num_payments - 1)
+    
+    return {
+        'interest_rate': round(interest_rate, 3),
+        'monthly_payment': round(monthly_payment, 2),
+        'loan_amount': loan_amount,
+        'loan_to_value_ratio': round(loan_amount / property_value, 3),
+        'debt_to_income_ratio': round((monthly_payment * 12) / income, 3),
+        'model_type': 'ml' if pricing_model != 'rule_based' else 'rule_based',
+        'calculation_timestamp': datetime.now().isoformat()
+    }
+
+def prepare_features(data):
+    """Prepare features for ML model prediction"""
+    return [
+        float(data['loan_amount']),
+        int(data['credit_score']),
+        float(data['applicant_income']),
+        float(data['property_value']),
+        float(data['loan_amount']) / float(data['property_value'])  # LTV ratio
+    ]
+
+@app.route('/pricing/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    model_status = 'loaded' if pricing_model is not None else 'not_loaded'
+    return jsonify({
+        'status': 'healthy',
+        'model_status': model_status,
+        'timestamp': datetime.now().isoformat()
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5001)

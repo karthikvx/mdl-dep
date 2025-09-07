@@ -1,70 +1,167 @@
+"""
+Default Prediction Service - Predicts loan default probability
+"""
+
 from flask import Flask, request, jsonify
-from prometheus_flask_exporter import PrometheusMetrics
-from app.services.prediction_service import DefaultPredictionService
-from app.models.schemas import LoanApplication
+import joblib
+import numpy as np
+import pandas as pd
+import boto3
+import os
+from datetime import datetime
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
-# Create Flask app
-prediction_app = Flask(__name__)
-metrics = PrometheusMetrics(prediction_app)
+# Global model cache
+prediction_model = None
+scaler = None
 
-# Initialize service
-prediction_service = DefaultPredictionService()
+def load_prediction_model():
+    """Load the default prediction model from S3 or local cache"""
+    global prediction_model, scaler
+    
+    if prediction_model is None:
+        try:
+            # Try to load from S3 first
+            s3_client = boto3.client('s3')
+            bucket_name = os.getenv('MODEL_BUCKET', 'mortgage-ml-models')
+            model_path = 'models/default_prediction/latest/'
+            
+            # Load model
+            s3_client.download_file(bucket_name, f'{model_path}model.pkl', 'prediction_model.pkl')
+            prediction_model = joblib.load('prediction_model.pkl')
+            
+            # Load scaler
+            s3_client.download_file(bucket_name, f'{model_path}scaler.pkl', 'prediction_scaler.pkl')
+            scaler = joblib.load('prediction_scaler.pkl')
+            
+            logger.info("Prediction model loaded from S3")
+        except Exception as e:
+            logger.warning(f"Could not load model from S3: {e}")
+            # Fallback: create a simple rule-based model
+            prediction_model = 'rule_based'
+            scaler = None
+            logger.info("Using rule-based prediction model")
 
-@prediction_app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'default-prediction-service',
-        'version': '1.0.0'
-    })
-
-@prediction_app.route('/predict_default', methods=['POST'])
-def predict_default():
-    """Process default risk prediction request"""
+@app.route('/prediction/default-risk', methods=['POST'])
+def predict_default_risk():
+    """Predict default probability for a loan application"""
     try:
-        data = request.get_json()
+        application_data = request.get_json()
         
         # Validate required fields
-        required_fields = ['loan_amount', 'credit_score', 'dti_ratio']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
+        required_fields = ['credit_score', 'debt_to_income_ratio', 'loan_to_value_ratio']
+        missing_fields = [field for field in required_fields if field not in application_data]
         
-        # Create loan application
-        loan_app = LoanApplication(
-            loan_amount=float(data['loan_amount']),
-            credit_score=int(data['credit_score']),
-            dti_ratio=float(data['dti_ratio']),
-            application_id=data.get('application_id')
-        )
+        if missing_fields:
+            return jsonify({
+                'error': 'Missing required fields',
+                'missing_fields': missing_fields
+            }), 400
         
-        # Process prediction
-        result = prediction_service.predict_default_risk(loan_app)
+        # Load model if not already loaded
+        load_prediction_model()
         
-        logger.info(f"Processed prediction for application {result.application_id}")
+        # Make prediction
+        prediction_result = predict_default(application_data)
         
-        return jsonify({
-            'application_id': result.application_id,
-            'default_risk': result.default_risk,
-            'risk_probability': result.risk_probability,
-            'processing_time_ms': result.processing_time_ms,
-            'timestamp': result.timestamp
-        })
+        return jsonify(prediction_result)
         
-    except ValueError as e:
-        logger.error(f"Validation error: {e}")
-        return jsonify({'error': f'Invalid input: {str(e)}'}), 400
     except Exception as e:
-        logger.error(f"Processing error: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        logger.error(f"Error predicting default risk: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Default prediction failed',
+            'message': str(e)
+        }), 500
 
-@prediction_app.route('/metrics')
-def metrics_endpoint():
-    """Prometheus metrics endpoint"""
-    return metrics.registry.collect()
+def predict_default(data):
+    """Predict default probability using ML model or business rules"""
+    credit_score = int(data['credit_score'])
+    dti_ratio = float(data.get('debt_to_income_ratio', 0))
+    ltv_ratio = float(data.get('loan_to_value_ratio', 0))
+    
+    if prediction_model == 'rule_based':
+        # Rule-based default prediction
+        default_probability = 0.05  # Base probability
+        
+        # Adjust based on credit score
+        if credit_score < 600:
+            default_probability += 0.15
+        elif credit_score < 650:
+            default_probability += 0.08
+        elif credit_score < 700:
+            default_probability += 0.03
+        
+        # Adjust based on debt-to-income ratio
+        if dti_ratio > 0.43:
+            default_probability += 0.10
+        elif dti_ratio > 0.36:
+            default_probability += 0.05
+        
+        # Adjust based on loan-to-value ratio
+        if ltv_ratio > 0.95:
+            default_probability += 0.08
+        elif ltv_ratio > 0.80:
+            default_probability += 0.03
+        
+        # Cap at reasonable maximum
+        default_probability = min(default_probability, 0.95)
+        
+        risk_category = categorize_risk(default_probability)
+        
+    else:
+        # ML model prediction
+        features = prepare_prediction_features(data)
+        scaled_features = scaler.transform([features]) if scaler else [features]
+        
+        # Get probability for positive class (default)
+        probabilities = prediction_model.predict_proba(scaled_features)
+        default_probability = probabilities[0][1]  # Probability of default (class 1)
+        
+        risk_category = categorize_risk(default_probability)
+    
+    return {
+        'default_probability': round(default_probability, 4),
+        'risk_category': risk_category,
+        'credit_score': credit_score,
+        'debt_to_income_ratio': dti_ratio,
+        'loan_to_value_ratio': ltv_ratio,
+        'model_type': 'ml' if prediction_model != 'rule_based' else 'rule_based',
+        'prediction_timestamp': datetime.now().isoformat()
+    }
+
+def prepare_prediction_features(data):
+    """Prepare features for ML model prediction"""
+    return [
+        int(data['credit_score']),
+        float(data.get('debt_to_income_ratio', 0)),
+        float(data.get('loan_to_value_ratio', 0)),
+        float(data.get('applicant_income', 50000)),
+        float(data.get('loan_amount', 200000))
+    ]
+
+def categorize_risk(probability):
+    """Categorize risk based on default probability"""
+    if probability < 0.05:
+        return 'low'
+    elif probability < 0.15:
+        return 'medium'
+    elif probability < 0.30:
+        return 'high'
+    else:
+        return 'very_high'
+
+@app.route('/prediction/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    model_status = 'loaded' if prediction_model is not None else 'not_loaded'
+    return jsonify({
+        'status': 'healthy',
+        'model_status': model_status,
+        'timestamp': datetime.now().isoformat()
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5002)
