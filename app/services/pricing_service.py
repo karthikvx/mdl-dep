@@ -7,6 +7,13 @@ class LoanPricingService:
     
     def calculate_interest_rate(self, loan_amount: float, credit_score: int, dti_ratio: float) -> float:
         """Calculate interest rate based on loan parameters"""
+        if not 300 <= credit_score <= 850:
+            raise ValueError("Credit score must be between 300 and 850")
+        if loan_amount <= 0:
+            raise ValueError("Loan amount must be positive")
+        if not 0 <= dti_ratio <= 1:
+            raise ValueError("DTI ratio must be between 0 and 1")
+
         risk_premium = 0.0
         
         # Credit score adjustments
