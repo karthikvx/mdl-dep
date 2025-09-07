@@ -1,0 +1,14 @@
+# Prediction Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prediction-service
+  namespace: mortgage-system
+spec:
+  selector:
+    app: prediction-service
+  ports:
+  - protocol: TCP
+    port: 5002
+    targetPort: 5002
+  type: ClusterIP

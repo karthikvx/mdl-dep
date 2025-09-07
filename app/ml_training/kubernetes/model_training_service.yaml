@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-training-service
+  namespace: mortgage-application
+  labels:
+    app: model-training-service
+spec:
+  selector:
+    app: model-training-service
+  ports:
+  - port: 80
+    targetPort: 5003
+    protocol: TCP
+    name: http
+  type: ClusterIP

@@ -1,0 +1,15 @@
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mortgage-config
+  namespace: mortgage-system
+data:
+  AWS_DEFAULT_REGION: "us-east-1"
+  DYNAMODB_TABLE_NAME: "mortgage-pricing-params"
+  S3_BUCKET_NAME: "mortgage-ml-models"
+  MODEL_KEY: "random_forest_default_model.pkl"
+  PRICING_SERVICE_URL: "http://pricing-service:5001"
+  PREDICTION_SERVICE_URL: "http://prediction-service:5002"
+  REDIS_URL: "redis://redis-service:6379"
+  ENVIRONMENT: "production"

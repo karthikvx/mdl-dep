@@ -1,4 +1,5 @@
 import os
+
 def main():
     """Main entry point - determines which service to run"""
     service_type = os.getenv('SERVICE_TYPE', 'orchestrator')
@@ -18,6 +19,11 @@ def main():
         from app.api.orchestrator_api import orchestrator_app
         print(f"Starting Orchestrator Service on port {port}")
         orchestrator_app.run(host='0.0.0.0', port=port, debug=False)
+        
+    elif service_type == 'training':  # NEW
+        from app.api.training_api import training_app
+        print(f"Starting Model Training Service on port {port}")
+        training_app.run(host='0.0.0.0', port=port, debug=False)
         
     else:
         raise ValueError(f"Unknown service type: {service_type}")

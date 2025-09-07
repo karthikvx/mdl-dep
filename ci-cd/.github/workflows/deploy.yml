@@ -1,0 +1,121 @@
+name: Deploy Mortgage Application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-west-2
+  EKS_CLUSTER_NAME: mortgage-application-cluster
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run tests
+      run: |
+        pytest tests/ --cov=app --cov-report=xml
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+
+  build-and-push:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+    
+    - name: Build and push Docker images
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build pricing service
+        docker build -f docker/Dockerfile.pricing -t $ECR_REGISTRY/mortgage-app/pricing-service:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/mortgage-app/pricing-service:$IMAGE_TAG
+        
+        # Build prediction service
+        docker build -f docker/Dockerfile.prediction -t $ECR_REGISTRY/mortgage-app/prediction-service:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/mortgage-app/prediction-service:$IMAGE_TAG
+        
+        # Build orchestrator service
+        docker build -f docker/Dockerfile.orchestrator -t $ECR_REGISTRY/mortgage-app/orchestrator-service:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/mortgage-app/orchestrator-service:$IMAGE_TAG
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+    
+    - name: Deploy to EKS
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        # Update image tags in Kubernetes manifests
+        sed -i "s|IMAGE_TAG|$IMAGE_TAG|g" kubernetes/*.yaml
+        sed -i "s|ECR_REGISTRY|$ECR_REGISTRY|g" kubernetes/*.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f kubernetes/namespace.yaml
+        kubectl apply -f kubernetes/rbac.yaml
+        kubectl apply -f kubernetes/pricing-service.yaml
+        kubectl apply -f kubernetes/prediction-service.yaml
+        kubectl apply -f kubernetes/orchestrator.yaml
+        
+        # Wait for deployments to be ready
+        kubectl rollout status deployment/loan-pricing-service -n mortgage-application
+        kubectl rollout status deployment/default-prediction-service -n mortgage-application
+        kubectl rollout status deployment/mortgage-orchestrator -n mortgage-application
