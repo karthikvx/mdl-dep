@@ -1,171 +1,125 @@
 version: '3.8'
 
 services:
-  # Main Orchestrator Service
   orchestrator:
-    build:
-      context: .
-      dockerfile: Dockerfile.orchestrator
-    container_name: mortgage-orchestrator
+    build: .
     ports:
       - "5000:5000"
     environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
-      - PRICING_SERVICE_URL=http://pricing-service:5001
-      - PREDICTION_SERVICE_URL=http://prediction-service:5002
-      - REDIS_URL=redis://redis:6379
-      - ENVIRONMENT=production
+      - SERVICE_TYPE=orchestrator
+      - AWS_REGION=us-east-1
+      - PRICING_SERVICE_URL=http://pricing:5000
+      - PREDICTION_SERVICE_URL=http://prediction:5000
+      - PORT=5000
     depends_on:
-      - redis
-      - pricing-service
-      - prediction-service
+      - pricing
+      - prediction
     networks:
       - mortgage-network
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
 
-  # Loan Pricing Service
-  pricing-service:
-    build:
-      context: .
-      dockerfile: Dockerfile.pricing
-    container_name: mortgage-pricing-service
+  pricing:
+    build: .
     ports:
-      - "5001:5001"
+      - "5001:5000"
     environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
-      - DYNAMODB_TABLE_NAME=mortgage-pricing-params
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - redis
+      - SERVICE_TYPE=pricing
+      - AWS_REGION=us-east-1
+      - MODEL_BUCKET=mortgage-ml-models
+      - PORT=5000
     networks:
       - mortgage-network
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # Default Prediction Service
-  prediction-service:
-    build:
-      context: .
-      dockerfile: Dockerfile.prediction
-    container_name: mortgage-prediction-service
+  prediction:
+    build: .
     ports:
-      - "5002:5002"
+      - "5002:5000"
     environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
-      - S3_BUCKET_NAME=mortgage-ml-models
-      - MODEL_KEY=random_forest_default_model.pkl
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - redis
+      - SERVICE_TYPE=prediction
+      - AWS_REGION=us-east-1
+      - MODEL_BUCKET=mortgage-ml-models
+      - PORT=5000
     networks:
       - mortgage-network
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # Redis for caching
+  model-training:
+    build: .
+    ports:
+      - "5003:5000"
+    environment:
+      - SERVICE_TYPE=model_training
+      - AWS_REGION=us-east-1
+      - MODEL_BUCKET=mortgage-ml-models
+      - PORT=5000
+    networks:
+      - mortgage-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: .
+    ports:
+      - "5004:5000"
+    environment:
+      - SERVICE_TYPE=dashboard
+      - AWS_REGION=us-east-1
+      - PORT=5000
+    networks:
+      - mortgage-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for caching (optional)
   redis:
     image: redis:7-alpine
-    container_name: mortgage-redis
     ports:
       - "6379:6379"
+    networks:
+      - mortgage-network
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
-    networks:
-      - mortgage-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
-  # Prometheus for metrics
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: mortgage-prometheus
+  # LocalStack for local AWS development
+  localstack:
+    image: localstack/localstack:latest
     ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    networks:
-      - mortgage-network
-    restart: unless-stopped
-
-  # Grafana for visualization
-  grafana:
-    image: grafana/grafana:latest
-    container_name: mortgage-grafana
-    ports:
-      - "3000:3000"
+      - "4566:4566"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
+      - SERVICES=s3,dynamodb,lambda,events,sns,logs,cloudwatch
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - localstack-data:/tmp/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - mortgage-network
-    restart: unless-stopped
-
-  # Nginx reverse proxy
-  nginx:
-    image: nginx:alpine
-    container_name: mortgage-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/certs:/etc/nginx/certs
-    depends_on:
-      - orchestrator
-      - pricing-service
-      - prediction-service
-    networks:
-      - mortgage-network
-    restart: unless-stopped
 
 networks:
   mortgage-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 volumes:
   redis-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
-    driver: local
+  localstack-data:

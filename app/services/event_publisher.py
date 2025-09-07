@@ -1,27 +1,44 @@
+"""
+Event Publisher Service - Handles EventBridge integration
+This connects the orchestrator to AWS EventBridge
+"""
+
 import boto3
 import json
+from datetime import datetime
 from typing import Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 class EventPublisher:
-    def __init__(self, event_bus_name: str = "mortgage-application-bus"):
-        self.client = boto3.client('events')
-        self.event_bus_name = event_bus_name
+    def __init__(self):
+        self.eventbridge = boto3.client('eventbridge')
+        self.event_bus_name = 'mortgage-application-bus'
     
-    def publish_event(self, source: str, detail_type: str, detail: Dict[Any, Any]):
+    def publish_event(self, event_type: str, detail: Dict[Any, Any], source: str = 'mortgage.application'):
         """Publish event to EventBridge"""
         try:
-            response = self.client.put_events(
+            event_detail = {
+                **detail,
+                'timestamp': datetime.now().isoformat(),
+                'event_id': f"{event_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            }
+            
+            response = self.eventbridge.put_events(
                 Entries=[
                     {
                         'Source': source,
-                        'DetailType': detail_type,
-                        'Detail': json.dumps(detail, default=str),
+                        'DetailType': event_type,
+                        'Detail': json.dumps(event_detail),
                         'EventBusName': self.event_bus_name
                     }
                 ]
             )
-            print(f"Event published: {response}")
+            
+            logger.info(f"Published event {event_type}: {response}")
             return response
+            
         except Exception as e:
-            print(f"Error publishing event: {e}")
+            logger.error(f"Failed to publish event {event_type}: {e}")
             raise
