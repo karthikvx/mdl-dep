@@ -42,20 +42,73 @@ An end-to-end mortgage application platform with loan pricing and default risk p
 
 ```text
 mortgage-application/
-├── app/                # Core application code
-│   ├── api/            # API endpoints (Flask)
-│   ├── models/         # ML models and training scripts
-│   ├── utils/          # Utility functions
-│   └── config.py       # Configuration settings
-├── tests/              # Unit and integration tests
-├── docker/             # Docker configuration
-├── kubernetes/         # Kubernetes manifests
-├── monitoring/         # Prometheus & Grafana configs
-├── ci-cd/              # GitHub Actions workflow
-├── requirements.txt    # Python dependencies
-├── .env                # Environment variables (optional)
-├── README.md           # Project documentation
-└── main.py             # Entry point script
+├── main.py 
+├── main_orchestrator.py                 # Entry point for orchestrator service
+├── main_pricing.py                      # Entry point for pricing service  
+├── main_prediction.py                   # Entry point for prediction service
+├── app/
+│   ├── __init__.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── schemas.py                    # 1. SHARED MODELS AND EVENTS
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── event_publisher.py            # 2. AWS EVENT PUBLISHER
+│   │   ├── pricing_service.py            # 3. LOAN PRICING MICROSERVICE
+│   │   ├── prediction_service.py         # 4. DEFAULT PREDICTION MICROSERVICE
+│   │   └── orchestrator.py               # 6. MAIN APPLICATION ORCHESTRATOR
+│   ├── lambda/
+│   │   ├── __init__.py
+│   │   └── aggregation_handler.py        # 5. DATA AGGREGATION LAMBDA
+│   └── utils/
+│       ├── __init__.py
+│       └── test_data.py                  # 7. SAMPLE USAGE AND TESTING
+├── docker/
+│   └── Dockerfile
+    ├── Dockerfile.orchestrator          # References main_orchestrator.py
+    ├── Dockerfile.pricing               # References main_pricing.py
+    └── Dockerfile.prediction            # References main_prediction.py
+├── kubernetes/
+│   ├── namespace.yaml
+│   ├── loan-pricing-service.yaml
+│   ├── default-prediction-service.yaml
+│   ├── mortgage-orchestrator.yaml
+│   └── rbac.yaml
+├── monitoring/
+│   ├── prometheus/
+│   │   └── prometheus.yml
+│   └── grafana/
+│       └── dashboards/
+│           └── mortgage-app-dashboard.json
+├── ci-cd/
+│   └── .github/
+│       └── workflows/
+│           └── deploy.yml
+├── infrastructure/
+│   ├── terraform/
+│   │   ├── main.tf
+│   │   ├── eventbridge.tf
+│   │   ├── dynamodb.tf
+│   │   └── s3.tf
+│   └── cloudformation/
+│       └── mortgage-app-stack.yaml
+├── tests/
+│   ├── __init__.py
+│   ├── unit/
+│   │   ├── test_pricing_service.py
+│   │   ├── test_prediction_service.py
+│   │   └── test_orchestrator.py
+│   └── integration/
+│       └── test_end_to_end.py
+├── scripts/
+│   ├── setup_environment.sh
+│   ├── deploy_services.sh
+│   └── load_test_data.py
+├── requirements.txt
+├── requirements-dev.txt
+├── .env.example
+├── docker-compose.yml
+└── README.md
 ```
 
 ## Directory Details
