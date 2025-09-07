@@ -25,23 +25,23 @@ def import_service_app(service_type):
     """
     try:
         if service_type == 'orchestrator':
-            from app.api.orchestrator import app as orchestrator_app
+            from app.api.orchestrator_api import app as orchestrator_app
             return orchestrator_app
         
         elif service_type == 'pricing':
-            from app.api.loan_pricing import app as pricing_app
+            from app.api.pricing_api import app as pricing_app
             return pricing_app
         
         elif service_type == 'prediction':
-            from app.api.default_prediction import app as prediction_app
+            from app.api.prediction_api import app as prediction_app
             return prediction_app
         
         elif service_type == 'model_training':
-            from app.api.model_training import app as training_app
+            from app.ml_training.api.training_api import app as training_app
             return training_app
         
         elif service_type == 'dashboard':
-            from app.api.model_dashboard import dashboard_bp
+            from app.ml_training.api.model_dashboard_api import dashboard_bp
             from flask import Flask
             app = Flask(__name__)
             app.register_blueprint(dashboard_bp)
