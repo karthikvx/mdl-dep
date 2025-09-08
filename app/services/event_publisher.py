@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class EventPublisher:
     def __init__(self):
-        self.eventbridge = boto3.client('eventbridge')
+        self.eventbridge = boto3.client('events')
         self.event_bus_name = 'mortgage-application-bus'
     
     def publish_event(self, event_type: str, detail: Dict[Any, Any], source: str = 'mortgage.application'):
